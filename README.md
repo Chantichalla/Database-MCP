@@ -1,108 +1,73 @@
 # Safe DB Gateway
 
-A security-hardened **MCP (Model Context Protocol) gateway** that lets AI agents query a PostgreSQL database without the ability to destroy it, leak it, or be tricked into either. Read-only by default, PII-masked at the view layer, rate-limited, quarantined on abuse — and writes only through human-approved, expiring, single-use tokens.
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
+[![MCP](https://img.shields.io/badge/MCP-stdio-green.svg)](https://modelcontextprotocol.io/)
 
-**The problem it solves:** giving an LLM a raw database connection is a loaded gun — hallucinated tables, leaked PII, prompt-injected `DROP`s. This gateway puts a policy-enforcing membrane between the agent and Postgres, with evidence (audit trail) for everything that happens.
+Secure MCP server for PostgreSQL. AI agents get read access with guardrails; writes require human approval.
 
-## Defense in depth
-
-| Layer | What it does |
-|---|---|
-| AST guardrail (`sqlglot`) | Blocks multi-statements, writable CTEs, dangerous functions (`pg_read_file`, …), non-whitelisted tables; clamps `LIMIT` to 100 |
-| PII barrier | `customer_masked` security-barrier view masks email/phone *before* any SQL function sees the data (closes `split_part`/`substring` bypasses) |
-| Least-privilege roles | Per-keycard Postgres roles (`gateway_reader`/`editor`/`admin`); raw `customer` + `employee` revoked where appropriate |
-| Read-only sessions | Read path runs `readonly=True` — Postgres itself rejects writes even if a guardrail fails |
-| Rate + compute limits | 30 queries/min, 15s compute budget per 10 min (`THROTTLED`, never a lockout, on reads) |
-| Circuit breaker | 3 violations → 15-min write quarantine, persisted in Postgres so restarts can't bypass it |
-| HITL mutations | Propose → human operator key → expiring (5-min) HMAC-signed single-use token → execute |
-| Audit + alerting | Append-only JSON-lines `audit.log` + `ALERT [...]` stderr lines for SIEM ingestion |
-
-## Access levels (keycards)
-
-One `default_role` line in `roles.yaml` sets the whole deployment's access until restart. Forks edit YAML, never code.
-
-| Role | Reads | Propose | Approve | Manage |
-|---|---|---|---|---|
-| `reader` | ✅ allowlisted tables, PII masked | ❌ | ❌ | ❌ |
-| `editor` | ✅ | ✅ on listed tables | ❌ (proposer ≠ approver) | ❌ |
-| `admin` | ✅ all business tables | ✅ | ✅ | ✅ (quarantine reset, audit) |
-
-Rules that never bend, for any role: restricted tables stay blocked unless explicitly granted, and schema destruction (`DROP`/`ALTER`/…) is rejected by the AST layer. A missing or broken `roles.yaml` fails **closed** to `reader`.
-
-## Quickstart (3 steps)
+## Quickstart
 
 Prerequisites: Python 3.10+, Docker.
 
 ```powershell
-python setup.py init --demo     # writes .env with fresh secrets
-python setup.py up              # starts Postgres, provisions everything
+pip install -r requirements.txt
+python setup.py init --demo
+python setup.py up
 ```
 
-Then paste the printed block from `mcp-servers.json` into your Claude Desktop config. That's it — `safe_query("SELECT * FROM track LIMIT 5")` should return masked Chinook rows.
-
-Against your own database: `python setup.py init` (wizard) or set `DB_HOST/DB_PORT/DB_NAME/DB_SEED=empty` — table-specific steps degrade gracefully with `SKIP` messages.
-
-## MCP tools
-
-| Tool | Role | Description |
-|---|---|---|
-| `safe_query` | all | Validated read-only query, PII-masked, capped at 100 rows / 2s |
-| `list_accessible_tables` | all | Allowlisted tables with planner row estimates (prevents hallucinated names) |
-| `describe_table` | all | Columns, types, primary keys, foreign keys |
-| `sample_rows` | all | Up to 3 masked sample rows — peek at data shapes before querying |
-| `propose_mutation` | editor, admin | Dry-run plan + expiring proposal token, executes nothing |
-| `apply_mutation` | admin | Executes a proposal with the operator approval key |
-| `get_gateway_health` | all | Health, circuit-breaker state, quotas |
-| `get_audit_summary` | all | Last N audit events (never quarantined) |
-| `reset_quarantine` | admin | Clear quarantine without restarting |
-
-## Configuration
-
-- `.env` — connection strings, generated secrets, `GATEWAY_ROLE`, thresholds. Never committed (see `.gitignore`). Server-side only.
-- `roles.yaml` — role definitions and table grants. Your access policy lives here; the gateway only enforces it.
-- `docker-compose.yml` — Postgres 16 (`scram-sha-256`, Chinook seed on first init).
-
-## Secrets handling
-
-- Secrets travel via `.env` or a secret manager (mounted env file, vault agent) — **never** as command-line flags. `setup.py` refuses credential-bearing arguments outright, since they leak into shell history and process lists.
-- Every audit line and surfaced error passes through a credential scrubber (`audit.scrub_secrets`): connection-string passwords, `password=` assignments, and SQL password literals are redacted before anything is written or returned. Assume any string *could* reach a log; the doorway guarantees it arrives clean.
-
-## Security model (honest boundaries)
-
-- **Threats closed and tested:** scalar-function file access, PII extraction via SQL functions, superuser runtime connections — proven by the 24-test end-to-end suite below.
-- **Current boundary is the machine:** over stdio there is no per-user auth — whoever holds `.env` and the MCP config holds the keycard in `GATEWAY_ROLE`. The `trust`-auth warning in provisioning (`setup_roles.py` step 5) must be resolved before any shared deployment.
-- **Roadmap:** per-caller auth (API keys → OIDC), HTTP/SSE transport with TLS, per-request tenant RLS, forensic audit queries — see `docs/transport_migration_checklist.md`.
-
-## Testing
-
-```powershell
-$env:PYTHONPATH='C:\DB_MCP'   # or export PYTHONPATH=/path/to/repo
-python tests/test_chinook_gateway.py   # 24 end-to-end tests against live Postgres
-python -m unittest discover -s tests
-```
-
-Covers: injection/CTE/restricted-table rejections, PII masking incl. bypass attempts, HITL lifecycle, token expiry/forgery, durable quarantine + restart survival, read-survives-quarantine rescoping, role enforcement at tool *and* DB layers, fail-closed config, RLS passthrough, pool ceilings.
-
-## Project structure
-
-```
-src/db_mcp/            gateway package (server, database pools, audit, config)
-src/db_mcp/guardrails/ ast_guard, executor, circuit_breaker
-scripts/setup_roles.py provisioning (views, roles, RLS, state table, keycards)
-setup.py               init wizard + up orchestrator
-roles.yaml             access-level definitions (the policy file you own)
-docker-compose.yml     local Postgres stack
-docs/                  transport migration checklist
-tests/                 unit suite + primary end-to-end suite (24 tests)
-```
-
-## Requirements
-
-`pip install -r requirements.txt` — `sqlglot`, `pydantic`, `mcp`, `psycopg2-binary`, `python-dotenv`, `pyyaml`.
-
-Packaged (`pyproject.toml`, version 0.1.0) for one-command install once published:
+Paste the printed block from `mcp-servers.json` into Claude Desktop. Or install directly:
 
 ```powershell
 pipx install git+https://github.com/Chantichalla/Database-MCP.git
-safe-db-gateway   # reads .env from the current directory
+safe-db-gateway
 ```
+
+To use your own database: `python setup.py init` (wizard) or set `DB_HOST` / `DB_PORT` / `DB_NAME` with `DB_SEED=empty`.
+
+## Tools
+
+| Tool | Access | Description |
+|---|---|---|
+| `safe_query` | all | Validated read-only SQL. Max 100 rows, 2s timeout, PII masked |
+| `list_accessible_tables` | all | Allowed tables with row estimates |
+| `describe_table` | all | Columns, types, primary and foreign keys |
+| `sample_rows` | all | Up to 3 masked sample rows |
+| `propose_mutation` | editor, admin | Dry-run plan + expiring token. Executes nothing |
+| `apply_mutation` | admin | Executes a proposal with the operator key |
+| `get_gateway_health` | all | Health, quarantine state, quotas |
+| `get_audit_summary` | all | Recent audit events |
+| `reset_quarantine` | admin | Clear quarantine without restart |
+
+## Access control
+
+One line in `roles.yaml` sets the deployment's access level:
+
+| Role | Reads | Propose | Approve | Manage |
+|---|---|---|---|---|
+| `reader` | ✅ | ❌ | ❌ | ❌ |
+| `editor` | ✅ | ✅ | ❌ | ❌ |
+| `admin` | ✅ | ✅ | ✅ | ✅ |
+
+Enforced twice: at the tool layer and by dedicated Postgres roles. Invalid config fails closed to `reader`.
+
+## Security
+
+- SQL validated by AST (`sqlglot`): SELECT-only, table whitelist, dangerous functions blocked
+- PII masked in a security-barrier view, before any SQL function sees the data
+- 3 violations → 15-minute write quarantine (reads keep working, persisted across restarts)
+- Writes need a human operator key plus a 5-minute single-use token
+- Append-only audit log; credentials scrubbed from all logs and errors
+- 28 end-to-end tests: `python tests/test_chinook_gateway.py`
+
+## Configuration
+
+| File | Purpose |
+|---|---|
+| `.env` | Connection strings, secrets, thresholds. Never committed |
+| `roles.yaml` | Role definitions and table grants |
+| `docker-compose.yml` | Local Postgres 16 stack with demo data |
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
