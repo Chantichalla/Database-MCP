@@ -7,7 +7,7 @@ End-to-end verification for:
 """
 import json
 import os
-from src.db_mcp.server import (
+from src.database_gateway.server import (
     list_accessible_tables,
     describe_table,
     sample_rows,
@@ -19,12 +19,12 @@ from src.db_mcp.server import (
     reset_quarantine,
     OPERATOR_APPROVAL_SECRET
 )
-from src.db_mcp.guardrails.circuit_breaker import (
+from src.database_gateway.guardrails.circuit_breaker import (
     CIRCUIT_BREAKER,
     SecurityCircuitBreaker,
     CircuitBreakerError,
 )
-from src.db_mcp.database import is_postgres, close_pools
+from src.database_gateway.database import is_postgres, close_pools
 
 
 def _reset_cb():
@@ -40,7 +40,7 @@ def _set_role(role: str):
 
 def run_tests():
     print("=" * 70)
-    print("SAFE DB GATEWAY — FULL CRITICAL-REMEDIATION VERIFICATION SUITE")
+    print("DATABASE GATEWAY — FULL CRITICAL-REMEDIATION VERIFICATION SUITE")
     print("=" * 70)
     print(f"Engine: {'PostgreSQL (Live Docker)' if is_postgres() else 'SQLite'}\n")
     _set_role("admin")  # full powers for the baseline + regression suite
@@ -231,7 +231,7 @@ def run_tests():
     import time as _time
     import hmac as _hmac
     import hashlib as _hashlib
-    from src.db_mcp import server as _srv
+    from src.database_gateway import server as _srv
     _reset_cb()
     prop = json.loads(propose_mutation(
         "UPDATE customer SET company = 'Phase2Test' WHERE customer_id = 2"))
@@ -265,7 +265,7 @@ def run_tests():
     print("  PASSED — TTL + tamper-evidence enforced, valid token works\n")
 
     print("[TEST 17] A3 — audit.log gains QUERY_ACCEPTED JSON-lines entries")
-    from src.db_mcp.audit import AUDIT_LOG
+    from src.database_gateway.audit import AUDIT_LOG
     _reset_cb()
 
     def _accepted_count():
@@ -292,7 +292,7 @@ def run_tests():
           f"summary events: {summ['event_count']}  PASSED\n")
 
     print("[TEST 18] B2 — Connection pool reuses backends (pg_stat_activity <= 5)")
-    from src.db_mcp.database import get_read_only_connection
+    from src.database_gateway.database import get_read_only_connection
     _reset_cb()
     _set_role("admin")
     close_pools()  # per-role pools: measure one role in isolation
@@ -332,7 +332,7 @@ def run_tests():
     default_count = _rc.fetchone()[0]
     assert default_count > 0, "RLS passthrough blocked default reads!"
     print(f"  RLS on, default-context rows: {default_count} (preserved)")
-    from src.db_mcp.database import set_session_context
+    from src.database_gateway.database import set_session_context
     rw.autocommit = False
     set_session_context(rw, "tenant_1")
     _rc.execute("SELECT count(*) FROM customer")
@@ -402,7 +402,7 @@ def run_tests():
     _bad.write("default_role: [unclosed\n  broken: : :\n")
     _bad.close()
     os.environ["GATEWAY_ROLES_FILE"] = _bad.name
-    from src.db_mcp import config as _cfg
+    from src.database_gateway import config as _cfg
     _cfg.load_config(force_reload=True)
     assert _cfg.is_degraded(), "Expected degraded fail-closed mode"
     bp = json.loads(propose_mutation(
@@ -420,7 +420,7 @@ def run_tests():
     _reset_cb()
     _set_role("admin")
     import psycopg2 as _pg3
-    from src.db_mcp.database import get_role_ro_params
+    from src.database_gateway.database import get_role_ro_params
     rp3 = get_role_ro_params("reader")
     rc = _pg3.connect(host=rp3["host"], port=rp3["port"], dbname=rp3["dbname"],
                       user=rp3["user"], password=rp3["password"])
@@ -482,7 +482,7 @@ def run_tests():
 
     # ─── CHECKOUT / KEYED / SCRUB / FUZZY HARDENING ─────────────────────────
     print("[TEST 25] Checkout choke point — every borrow hardened")
-    from src.db_mcp.database import get_read_only_connection, get_read_write_connection
+    from src.database_gateway.database import get_read_only_connection, get_read_write_connection
     _reset_cb()
     _set_role("reader")
     with get_read_only_connection() as _c:
@@ -525,7 +525,7 @@ def run_tests():
     _set_role("admin")
 
     print("[TEST 27] Secret scrubber — logs and errors can't persist credentials")
-    from src.db_mcp.audit import scrub_secrets, AUDIT_LOG
+    from src.database_gateway.audit import scrub_secrets, AUDIT_LOG
     assert scrub_secrets("postgresql://alice:s3cr3t@h:5432/db") == \
         "postgresql://alice:***@h:5432/db"
     assert scrub_secrets("password=hunter2 x") == "password=*** x"
@@ -539,7 +539,7 @@ def run_tests():
     print("  PASSED — doorway scrubs, logging still flows\n")
 
     print("[TEST 28] Fuzzy PII — variant column names mask like canonical ones")
-    from src.db_mcp.guardrails.executor import mask_pii_value as _mask
+    from src.database_gateway.guardrails.executor import mask_pii_value as _mask
     for _col in ("e_mail", "E-Mail Address", "mobile_no", "phone-number",
                  "telephone", "social_security_no", "credit_card"):
         assert _mask(_col, "sensitive-value-1") != "sensitive-value-1", _col

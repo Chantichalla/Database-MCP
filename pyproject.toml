@@ -1,12 +1,12 @@
-# Safe DB Gateway — security-hardened MCP server for PostgreSQL.
-# Install: pip install . / pipx install . / uvx --from . safe-db-gateway
-# Run:     safe-db-gateway   (reads .env from the current directory)
+# Database Gateway — security-hardened MCP server for PostgreSQL.
+# Install: pip install . / pipx install . / uvx --from . database-gateway
+# Run:     database-gateway   (reads .env from the current directory)
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "safe-db-gateway"
+name = "database-gateway"
 version = "0.1.0"
 description = "Security-hardened MCP database gateway: AST guardrails, PII masking, RBAC keycards, human-approved writes, full audit trail."
 readme = "README.md"
@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.scripts]
-safe-db-gateway = "db_mcp.server:main"
+database-gateway = "database_gateway.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

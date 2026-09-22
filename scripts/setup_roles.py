@@ -14,9 +14,9 @@ import sys
 import psycopg2
 from dotenv import load_dotenv
 
-# Standalone script: make `src.db_mcp.config` importable for roles.yaml.
+# Standalone script: make `src.database_gateway.config` importable for roles.yaml.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from src.db_mcp.config import load_config
+from src.database_gateway.config import load_config
 
 # Load admin connection details from .env
 env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))

@@ -1,6 +1,6 @@
 <div align="center">
 
-# Safe DB Gateway
+# Database Gateway
 
 **Secure MCP server for PostgreSQL — guarded reads, masked PII, human-approved writes.**
 
@@ -30,7 +30,7 @@ Paste the printed block from `mcp-servers.json` into Claude Desktop. Or install 
 
 ```powershell
 pipx install git+https://github.com/Chantichalla/Database-MCP.git
-safe-db-gateway
+database-gateway
 ```
 
 Own database? `python setup.py init` (wizard) or set `DB_HOST` / `DB_PORT` / `DB_NAME` with `DB_SEED=empty`.

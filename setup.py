@@ -1,4 +1,4 @@
-"""Safe DB Gateway — 3-step local setup:  init  ->  up  ->  paste MCP JSON.
+"""Database Gateway — 3-step local setup:  init  ->  up  ->  paste MCP JSON.
 
   python setup.py init [--demo] [--role reader|editor|admin]
   python setup.py up
@@ -59,7 +59,7 @@ def cmd_init(args) -> int:
         role = args.role or "reader"
         postgres_pw = _gen_secret()
     elif sys.stdin.isatty():
-        print("Safe DB Gateway — init (empty = default).")
+        print("Database Gateway — init (empty = default).")
         use_demo = _ask("Use bundled demo DB via docker compose? (Y/n)", "Y")
         if use_demo.lower().startswith("n"):
             db_host = _ask("Postgres host", os.getenv("DB_HOST", "127.0.0.1"))
@@ -168,9 +168,9 @@ def cmd_up(args) -> int:
 
     mcp_config = {
         "mcpServers": {
-            "safe-db-gateway": {
+            "database-gateway": {
                 "command": sys.executable,
-                "args": ["-m", "src.db_mcp.server"],
+                "args": ["-m", "src.database_gateway.server"],
                 "cwd": ROOT,
             }
         }
@@ -196,7 +196,7 @@ def main() -> int:
             print("Refused: pass secrets via .env or a secret manager, never as "
                   "command-line arguments (they leak into shell history and process lists).")
             return 2
-    parser = argparse.ArgumentParser(description="Safe DB Gateway local setup.")
+    parser = argparse.ArgumentParser(description="Database Gateway local setup.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_init = sub.add_parser("init", help="Write .env (wizard or --demo).")

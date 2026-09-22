@@ -1,4 +1,4 @@
-# Safe DB Gateway — access levels (keycards).
+# Database Gateway — access levels (keycards).
 #
 # WHO OWNS THIS FILE: whoever deploys the gateway (you / your company's ops).
 # The gateway only *enforces* it; no tool can read or change it at runtime.

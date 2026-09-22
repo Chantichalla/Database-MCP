@@ -9,14 +9,14 @@ import unittest
 import tempfile
 import sqlite3
 
-from src.db_mcp.database import initialize_database, ALLOWED_BUSINESS_TABLES
-from src.db_mcp.guardrails.ast_guard import (
+from src.database_gateway.database import initialize_database, ALLOWED_BUSINESS_TABLES
+from src.database_gateway.guardrails.ast_guard import (
     validate_and_transform_query,
     inspect_mutation_ast,
     ASTGuardrailError
 )
-from src.db_mcp.guardrails.executor import execute_bounded_query
-from src.db_mcp.server import (
+from src.database_gateway.guardrails.executor import execute_bounded_query
+from src.database_gateway.server import (
     safe_query,
     list_accessible_tables,
     describe_table,
@@ -25,7 +25,7 @@ from src.db_mcp.server import (
 )
 
 
-class TestSafeDatabaseGateway(unittest.TestCase):
+class TestDatabaseGateway(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):

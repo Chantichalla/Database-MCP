@@ -1,5 +1,5 @@
 """
-MCP Server implementation for Safe Database Gateway.
+MCP Server implementation for Database Gateway.
 Provides tools for autonomous read-only querying, schema discovery,
 circuit breaker anomaly monitoring, and authenticated Human-in-the-Loop (HITL) mutation controls.
 """
@@ -14,10 +14,10 @@ from typing import Dict, Any, Optional
 
 try:
     from mcp.server.mcpserver import MCPServer
-    mcp = MCPServer("SafeDatabaseGateway")
+    mcp = MCPServer("DatabaseGateway")
 except ImportError:
     from mcp.server.fastmcp import FastMCP
-    mcp = FastMCP("SafeDatabaseGateway")
+    mcp = FastMCP("DatabaseGateway")
 
 from .database import (
     initialize_database,

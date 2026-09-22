@@ -1,10 +1,10 @@
-# Safe DB Gateway — local stack.
+# Database Gateway — local stack.
 # One command:  docker compose up -d db   (or: python setup.py up)
 # Fresh volume? The Chinook seed in ./db/ loads automatically on first init.
 # Auth is scram-sha-256 by default (never trust) for the postgres superuser
 # password below — set POSTGRES_PASSWORD in .env (setup.py init does it).
 
-name: safe-db-gateway
+name: database-gateway
 
 services:
   db:

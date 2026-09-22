@@ -24,6 +24,6 @@ in the same commit.
 
 - No secrets in code, configs, or tests — placeholders only (see `.env.example`).
 - Access control changes must hold at **both** layers: tool gating in
-  `src/db_mcp/server.py` and grants in `scripts/setup_roles.py`.
+  `src/database_gateway/server.py` and grants in `scripts/setup_roles.py`.
 - New dependencies need a stated reason — this project stays lean on purpose.
 - Keep the README minimal: tables over prose.
