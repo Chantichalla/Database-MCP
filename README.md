@@ -2,9 +2,6 @@
 
 # Database Gateway
 
-**AI agents need database access, but a raw connection lets them leak PII, wreck schema, or obey injected instructions.**
-**This gateway sits between the agent and Postgres — reads are validated and masked, writes need a human, and every action is audited.**
-
 [Quickstart](#quickstart) · [Tools](#tools) · [Access Control](#access-control) · [Security](#security) · [Contributing](CONTRIBUTING.md) · [License](#license)
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
@@ -14,6 +11,10 @@
 [![Tests](https://img.shields.io/badge/tests-28_passing-brightgreen.svg)](tests/test_chinook_gateway.py)
 
 </div>
+
+## Why
+
+AI agents need database access, but a raw connection lets them leak PII, wreck schema, or obey injected instructions. This gateway sits between the agent and Postgres — reads are validated and masked, writes need a human, and every action is audited.
 
 ## Quickstart
 
