@@ -25,6 +25,14 @@ dist/
 *.sqlite
 *.sqlite3
 
+# Local process/scratch docs (kept locally, not published)
+implementation_plan.md
+next_fix.md
+new_improv.md
+safe-db-gateway_security_report.md
+Scale_prob.md
+demo_benchmarks.py
+
 # IDE, OS and local agent files
 .vscode/
 .idea/

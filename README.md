@@ -64,7 +64,7 @@ Against your own database: `python setup.py init` (wizard) or set `DB_HOST/DB_PO
 
 ## Security model (honest boundaries)
 
-- **Threats closed and tested:** scalar-function file access, PII extraction via SQL functions, superuser runtime connections — see `safe-db-gateway_security_report.md` and the 22-test suite.
+- **Threats closed and tested:** scalar-function file access, PII extraction via SQL functions, superuser runtime connections — proven by the 24-test end-to-end suite below.
 - **Current boundary is the machine:** over stdio there is no per-user auth — whoever holds `.env` and the MCP config holds the keycard in `GATEWAY_ROLE`. The `trust`-auth warning in provisioning (`setup_roles.py` step 5) must be resolved before any shared deployment.
 - **Roadmap:** per-caller auth (API keys → OIDC), HTTP/SSE transport with TLS, per-request tenant RLS, forensic audit queries — see `docs/transport_migration_checklist.md`.
 
@@ -72,7 +72,7 @@ Against your own database: `python setup.py init` (wizard) or set `DB_HOST/DB_PO
 
 ```powershell
 $env:PYTHONPATH='C:\DB_MCP'   # or export PYTHONPATH=/path/to/repo
-python test_chinook_gateway.py   # 24 end-to-end tests against live Postgres
+python tests/test_chinook_gateway.py   # 24 end-to-end tests against live Postgres
 python -m unittest discover -s tests
 ```
 
@@ -88,8 +88,7 @@ setup.py               init wizard + up orchestrator
 roles.yaml             access-level definitions (the policy file you own)
 docker-compose.yml     local Postgres stack
 docs/                  transport migration checklist
-tests/                 legacy SQLite unit suite
-test_chinook_gateway.py  primary end-to-end suite (22 tests)
+tests/                 unit suite + primary end-to-end suite (24 tests)
 ```
 
 ## Requirements

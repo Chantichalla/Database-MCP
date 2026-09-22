@@ -206,8 +206,9 @@ def run_tests():
 
     print("[TEST 15] A1 — setup_roles detects trust auth")
     import importlib.util
+    _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     spec = importlib.util.spec_from_file_location(
-        "setup_roles", "scripts/setup_roles.py")
+        "setup_roles", os.path.join(_repo_root, "scripts", "setup_roles.py"))
     setup_roles = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup_roles)
     import psycopg2 as _pg
@@ -215,7 +216,8 @@ def run_tests():
     admin = _pg.connect(host=_os.getenv("DB_HOST", "127.0.0.1"),
                         port=int(_os.getenv("DB_PORT", "5433")),
                         dbname=_os.getenv("DB_NAME", "chinook"),
-                        user="postgres", password="postgres")
+                        user=_os.getenv("POSTGRES_USER", "postgres"),
+                        password=_os.getenv("POSTGRES_PASSWORD", "postgres"))
     admin.autocommit = True
     trust = setup_roles.check_trust_auth(admin.cursor())
     admin.close()
