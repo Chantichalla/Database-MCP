@@ -158,14 +158,13 @@ else:
 def get_read_only_connection() -> Generator[Any, None, None]:
     """
     Opens a strict read-only database connection (pooled on Postgres).
-    - PostgreSQL: checks out from ThreadedConnectionPool (max 5), sets
-      session readonly=True. The engine rejects any mutation.
+    - PostgreSQL: checks out from the role's ThreadedConnectionPool (max 5),
+      then runs the checkout choke point (_harden_checkout).
     - SQLite: Opens URI with mode=ro.
     """
     if is_postgres():
         conn = _borrow_ro_conn()
-        # Hard engine-level guarantee: set session to read-only
-        conn.set_session(readonly=True, autocommit=False)
+        _harden_checkout(conn, readonly=True)
         try:
             yield conn
         finally:
@@ -193,6 +192,31 @@ def release_connection(conn) -> None:
             conn.close()
         except Exception:
             pass
+
+
+# ── Checkout choke point ────────────────────────────────────────────────
+# Session/transaction constraints enforced on EVERY Postgres checkout —
+# pooled or direct-fallback, every role, every caller. No code path
+# (schema tools, estimates, FK lookups, future features) can forget them.
+CHECKOUT_STATEMENT_TIMEOUT_MS = max(
+    100, int(float(os.getenv("DB_TIMEOUT_SECONDS", "2.0")) * 1000))
+
+
+def _harden_checkout(conn, *, readonly: bool) -> None:
+    """Apply engine-level guarantees to a freshly borrowed connection."""
+    conn.set_session(readonly=readonly, autocommit=False)
+    cur = conn.cursor()
+    try:
+        # Baseline timeout: raw-SQL paths (describe, estimates, FK lookups)
+        # never set their own. The executor still sets a per-query timeout
+        # that overrides this for bounded queries.
+        cur.execute(f"SET statement_timeout = '{CHECKOUT_STATEMENT_TIMEOUT_MS}ms'")
+        # Tenant hygiene: pooled connections may carry a leftover tenant
+        # placeholder. RLS treats NULL/'' identically, but explicit RESET
+        # keeps sessions clean for future tenant-aware policies.
+        cur.execute("RESET app.current_tenant")
+    finally:
+        cur.close()
 
 
 # ── B2: connection pools (lazy, thread-safe) ──────────────────────────────
@@ -330,7 +354,7 @@ def get_read_write_connection() -> Generator[Any, None, None]:
     """
     if is_postgres():
         conn = _borrow_rw_conn()
-        conn.set_session(readonly=False, autocommit=False)
+        _harden_checkout(conn, readonly=False)
         try:
             yield conn
         finally:

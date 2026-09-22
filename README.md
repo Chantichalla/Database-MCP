@@ -62,6 +62,11 @@ Against your own database: `python setup.py init` (wizard) or set `DB_HOST/DB_PO
 - `roles.yaml` — role definitions and table grants. Your access policy lives here; the gateway only enforces it.
 - `docker-compose.yml` — Postgres 16 (`scram-sha-256`, Chinook seed on first init).
 
+## Secrets handling
+
+- Secrets travel via `.env` or a secret manager (mounted env file, vault agent) — **never** as command-line flags. `setup.py` refuses credential-bearing arguments outright, since they leak into shell history and process lists.
+- Every audit line and surfaced error passes through a credential scrubber (`audit.scrub_secrets`): connection-string passwords, `password=` assignments, and SQL password literals are redacted before anything is written or returned. Assume any string *could* reach a log; the doorway guarantees it arrives clean.
+
 ## Security model (honest boundaries)
 
 - **Threats closed and tested:** scalar-function file access, PII extraction via SQL functions, superuser runtime connections — proven by the 24-test end-to-end suite below.

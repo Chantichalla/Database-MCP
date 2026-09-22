@@ -185,6 +185,17 @@ def cmd_up(args) -> int:
 
 
 def main() -> int:
+    # Secrets travel via .env / secret managers, never via CLI flags (they
+    # leak into shell history, process lists, and CI logs). Refuse outright.
+    for arg in sys.argv[1:]:
+        lowered = arg.lower()
+        if lowered.startswith(("--password", "--db-password", "--secret")) \
+                or "://" in arg and "@" in arg \
+                or lowered.startswith(("database_url=", "db_password=",
+                                       "postgres_password=", "operator_approval_secret=")):
+            print("Refused: pass secrets via .env or a secret manager, never as "
+                  "command-line arguments (they leak into shell history and process lists).")
+            return 2
     parser = argparse.ArgumentParser(description="Safe DB Gateway local setup.")
     sub = parser.add_subparsers(dest="command", required=True)
 

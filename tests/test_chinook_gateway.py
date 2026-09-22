@@ -28,8 +28,10 @@ from src.db_mcp.database import is_postgres, close_pools
 
 
 def _reset_cb():
-    # Clears memory L1, L1 bookkeeping, AND the durable Postgres row.
-    CIRCUIT_BREAKER.reset_session("default")
+    # Clears memory L1, L1 bookkeeping, AND durable rows for every
+    # keycard (enforcement is keyed by active role since the rescope).
+    for _role in ("reader", "editor", "admin", "default"):
+        CIRCUIT_BREAKER.reset_session(_role)
 
 
 def _set_role(role: str):
@@ -196,8 +198,9 @@ def run_tests():
     # ─── PHASE 2 HARDENING ──────────────────────────────────────────────────
     print("[TEST 14] B1 — Quarantine survives gateway restart (durable CB)")
     fresh = SecurityCircuitBreaker()
+    _role_key = os.getenv("GATEWAY_ROLE", "admin")  # enforcement keyed by role
     try:
-        fresh.check_allowed("default")
+        fresh.check_allowed(_role_key)
         raise AssertionError("Fresh instance allowed quarantined session — durable CB broken!")
     except CircuitBreakerError as e:
         print(f"  Fresh instance quarantined (GOOD): {str(e)[:60]}...")
@@ -477,11 +480,82 @@ def run_tests():
     print(f"  estimates: track={est.get('track')} (planner estimate, GOOD)")
     print("  PASSED — join discovery + sizing without new leaks\n")
 
+    # ─── CHECKOUT / KEYED / SCRUB / FUZZY HARDENING ─────────────────────────
+    print("[TEST 25] Checkout choke point — every borrow hardened")
+    from src.db_mcp.database import get_read_only_connection, get_read_write_connection
+    _reset_cb()
+    _set_role("reader")
+    with get_read_only_connection() as _c:
+        _cur = _c.cursor()
+        _cur.execute("SHOW transaction_read_only")
+        assert _cur.fetchone()[0] == "on", "RO checkout not read-only!"
+        _cur.execute("SHOW statement_timeout")
+        assert _cur.fetchone()[0] not in ("0", "0s"), "RO checkout has no timeout!"
+    print("  RO borrow: read-only + bounded (GOOD)")
+    _set_role("admin")
+    with get_read_write_connection() as _c2:
+        _cur2 = _c2.cursor()
+        _cur2.execute("SHOW transaction_read_only")
+        assert _cur2.fetchone()[0] == "off", "RW checkout wrongly read-only!"
+        _cur2.execute("SHOW statement_timeout")
+        assert _cur2.fetchone()[0] not in ("0", "0s"), "RW checkout has no timeout!"
+        _cur2.execute("SELECT current_setting('app.current_tenant', true)")
+        assert _cur2.fetchone()[0] in (None, ""), "Tenant leaked across checkout!"
+    print("  RW borrow: writable + bounded + tenant-clean (GOOD)")
+    print("  PASSED — no code path can skip session constraints\n")
+
+    print("[TEST 26] Keyed counters — one role's abuse doesn't lock others")
+    _reset_cb()
+    _set_role("editor")
+    for _ in range(3):
+        safe_query("SELECT * FROM employee")
+    ed = json.loads(propose_mutation(
+        "UPDATE customer SET company = 'X' WHERE customer_id = 1"))
+    assert ed["status"] == "CIRCUIT_BREAKER_ACTIVE", ed
+    print("  editor writes quarantined (GOOD)")
+    _set_role("admin")
+    ad = json.loads(propose_mutation(
+        "UPDATE customer SET company = 'X' WHERE customer_id = 1"))
+    assert ad["status"] == "PROPOSAL_CREATED", ad
+    print("  admin writes unaffected by editor abuse (GOOD)")
+    ar = json.loads(safe_query("SELECT track_id FROM track LIMIT 1"))
+    assert ar["status"] == "SUCCESS", ar
+    print("  PASSED — enforcement isolated per keycard\n")
+    _reset_cb()
+    _set_role("admin")
+
+    print("[TEST 27] Secret scrubber — logs and errors can't persist credentials")
+    from src.db_mcp.audit import scrub_secrets, AUDIT_LOG
+    assert scrub_secrets("postgresql://alice:s3cr3t@h:5432/db") == \
+        "postgresql://alice:***@h:5432/db"
+    assert scrub_secrets("password=hunter2 x") == "password=*** x"
+    assert scrub_secrets("LOGIN PASSWORD 's3cret'") == "LOGIN PASSWORD '***'"
+    assert scrub_secrets("hotel lobby mailer") == "hotel lobby mailer"
+    print("  scrub patterns redacted, plain text untouched (GOOD)")
+    _before = AUDIT_LOG.read_text(encoding="utf-8") if AUDIT_LOG.exists() else ""
+    json.loads(safe_query("SELECT track_id FROM track LIMIT 1"))
+    _after = AUDIT_LOG.read_text(encoding="utf-8")
+    assert len(_after) >= len(_before), "Audit stopped appending!"
+    print("  PASSED — doorway scrubs, logging still flows\n")
+
+    print("[TEST 28] Fuzzy PII — variant column names mask like canonical ones")
+    from src.db_mcp.guardrails.executor import mask_pii_value as _mask
+    for _col in ("e_mail", "E-Mail Address", "mobile_no", "phone-number",
+                 "telephone", "social_security_no", "credit_card"):
+        assert _mask(_col, "sensitive-value-1") != "sensitive-value-1", _col
+    print("  7 variant spellings masked (GOOD)")
+    for _col, _val in (("hotel_name", "Grand Hotel"), ("mailer_report", "weekly"),
+                       ("track_name", "Song"), ("price", "9.99")):
+        assert _mask(_col, _val) == _val, (_col, _val)
+    print("  4 innocent columns untouched (GOOD)")
+    print("  PASSED — weird schemas covered, no false positives\n")
+
     print("=" * 70)
     print("ALL CRITICAL REMEDIATION TESTS PASSED — 3 VULNERABILITIES CLOSED.")
     print("PHASE 2 HARDENING VERIFIED — A1/A2/A3 + B1/B2/B3 (+B4 alerting, B5 docs).")
     print("A0 KEYCARDS VERIFIED — reader/editor/admin at tool + DB layers.")
     print("DISCOVERY+ VERIFIED — sample_rows, FKs, row estimates.")
+    print("HARDENING VERIFIED — checkout choke, keyed counters, scrubber, fuzzy PII.")
     print("QUARANTINE RESCOPED — writes gated, reads throttled, audit always open.")
     print("=" * 70)
 

@@ -46,7 +46,7 @@ from .guardrails.circuit_breaker import (
     CircuitBreakerError,
     RateLimitExceededError,
 )
-from .audit import log_event, read_last_events
+from .audit import log_event, read_last_events, scrub_secrets
 from .config import get_active_role, get_role_spec
 
 # Secret key required for human operators to approve mutations (prevents LLM self-approval)
@@ -134,12 +134,28 @@ def _tables_denied(role_tables, accessed) -> list:
     return sorted({t for t in accessed if t.lower() not in allowed})
 
 
+def _sess() -> str:
+    """Enforcement/audit session key: the active gateway role.
+
+    One shared "default" let one actor's abuse lock out everyone. Keying by
+    role isolates keycards (editor probes can no longer quarantine admin
+    approvals). Per-user identity remains future work; this is the honest
+    per-keycard step. Resolved live (env-overridable) so tests can switch.
+    """
+    return get_active_role()
+
+
+def _safe_err(e: Exception) -> str:
+    """Exception text safe to surface: credential patterns redacted."""
+    return scrub_secrets(str(e))
+
+
 @mcp.tool()
 def get_gateway_health() -> str:
     """
     Returns the real-time health, anomaly circuit breaker state, and quota usage of the database gateway.
     """
-    status = CIRCUIT_BREAKER.get_status("default")
+    status = CIRCUIT_BREAKER.get_status(_sess())
     return json.dumps({
         "status": "HEALTHY" if not status["is_quarantined"] else "QUARANTINED",
         "engine": "PostgreSQL (Chinook)" if is_postgres() else "SQLite",
@@ -169,26 +185,26 @@ def safe_query(sql: str) -> str:
     """
     # Pre-execution check: throttle-only for reads (quarantine gates writes).
     try:
-        CIRCUIT_BREAKER.check_read_allowed("default")
-        CIRCUIT_BREAKER.record_query_start("default")
+        CIRCUIT_BREAKER.check_read_allowed(_sess())
+        CIRCUIT_BREAKER.record_query_start(_sess())
     except CircuitBreakerError as e:
-        log_event("SESSION_QUARANTINED_HIT", session_id="default")
-        log_event("QUERY_REJECTED", session_id="default", raw_input=sql,
+        log_event("SESSION_QUARANTINED_HIT", session_id=_sess())
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=sql,
                   rejection_reason=str(e), stage="CB")
         return json.dumps({
             "status": "CIRCUIT_BREAKER_ACTIVE",
             "category": "SESSION_QUARANTINED",
-            "error": str(e),
-            "circuit_breaker_status": CIRCUIT_BREAKER.get_status("default")
+            "error": _safe_err(e),
+            "circuit_breaker_status": CIRCUIT_BREAKER.get_status(_sess())
         }, indent=2)
     except RateLimitExceededError as e:
-        log_event("QUERY_REJECTED", session_id="default", raw_input=sql,
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=sql,
                   rejection_reason=str(e), stage="RATE_LIMIT")
         return json.dumps({
             "status": "THROTTLED",
             "category": "RATE_LIMIT_EXCEEDED",
-            "error": str(e),
-            "circuit_breaker_status": CIRCUIT_BREAKER.get_status("default")
+            "error": _safe_err(e),
+            "circuit_breaker_status": CIRCUIT_BREAKER.get_status(_sess())
         }, indent=2)
 
     dialect = get_current_dialect()
@@ -206,7 +222,7 @@ def safe_query(sql: str) -> str:
         if is_postgres():
             denied = _tables_denied(get_role_spec(role)["tables_read"], tables_accessed)
             if denied:
-                log_event("QUERY_REJECTED", session_id="default", raw_input=sql,
+                log_event("QUERY_REJECTED", session_id=_sess(), raw_input=sql,
                           rejection_reason=f"Role '{role}' may not read table(s): {denied}",
                           stage="ROLE")
                 return _forbidden_response(
@@ -226,7 +242,7 @@ def safe_query(sql: str) -> str:
         result["status"] = "SUCCESS"
         result["engine"] = "PostgreSQL" if is_postgres() else "SQLite"
 
-        log_event("QUERY_ACCEPTED", session_id="default", safe_sql=safe_sql,
+        log_event("QUERY_ACCEPTED", session_id=_sess(), safe_sql=safe_sql,
                   tables_accessed=sorted(list(tables_accessed)),
                   row_count=result.get("row_count", 0),
                   exec_ms=result.get("execution_time_ms", 0))
@@ -234,41 +250,41 @@ def safe_query(sql: str) -> str:
 
     except ASTGuardrailError as e:
         # Record violation in Circuit Breaker
-        tripped = CIRCUIT_BREAKER.record_violation("default", str(e))
-        cb_status = CIRCUIT_BREAKER.get_status("default")
+        tripped = CIRCUIT_BREAKER.record_violation(_sess(), str(e))
+        cb_status = CIRCUIT_BREAKER.get_status(_sess())
         warning = "ATTENTION: Circuit breaker tripped! Session is now quarantined." if tripped else f"Warning: {cb_status['violations_in_window']}/{cb_status['max_violations_threshold']} violations before session quarantine."
 
-        log_event("QUERY_REJECTED", session_id="default", raw_input=sql,
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=sql,
                   rejection_reason=str(e), stage="AST")
         if tripped:
-            log_event("CIRCUIT_BREAKER_TRIP", session_id="default",
+            log_event("CIRCUIT_BREAKER_TRIP", session_id=_sess(),
                       violation_count=cb_status["violations_in_window"],
                       quarantine_until=cb_status.get("quarantine_remaining_seconds", 0))
         return json.dumps({
             "status": "REJECTED_BY_GUARDRAIL",
             "category": "AST_SECURITY_VIOLATION",
-            "error": str(e),
+            "error": _safe_err(e),
             "circuit_breaker": warning,
             "quarantined": tripped,
             "original_query": sql
         }, indent=2)
 
     except TimeoutError as e:
-        log_event("QUERY_REJECTED", session_id="default", raw_input=sql,
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=sql,
                   rejection_reason=str(e), stage="TIMEOUT")
         return json.dumps({
             "status": "EXECUTION_TIMEOUT",
             "category": "BOUNDED_TIMEOUT_EXCEEDED",
-            "error": str(e),
+            "error": _safe_err(e),
             "original_query": sql
         }, indent=2)
     except Exception as e:
-        log_event("QUERY_REJECTED", session_id="default", raw_input=sql,
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=sql,
                   rejection_reason=str(e), stage="DB")
         return json.dumps({
             "status": "DATABASE_ERROR",
             "category": "EXECUTION_FAILURE",
-            "error": str(e),
+            "error": _safe_err(e),
             "original_query": sql
         }, indent=2)
 
@@ -280,9 +296,9 @@ def list_accessible_tables() -> str:
     Prevents the LLM from hallucinating queries against internal/restricted tables.
     """
     try:
-        CIRCUIT_BREAKER.check_read_allowed("default")
+        CIRCUIT_BREAKER.check_read_allowed(_sess())
     except (CircuitBreakerError, RateLimitExceededError) as e:
-        return json.dumps({"status": "CIRCUIT_BREAKER_ACTIVE", "error": str(e)}, indent=2)
+        return json.dumps({"status": "CIRCUIT_BREAKER_ACTIVE", "error": _safe_err(e)}, indent=2)
 
     if is_postgres():
         table_catalog = {
@@ -322,13 +338,13 @@ def describe_table(table_name: str) -> str:
     Returns column names, data types, and primary key constraints for an accessible table.
     """
     try:
-        CIRCUIT_BREAKER.check_read_allowed("default")
+        CIRCUIT_BREAKER.check_read_allowed(_sess())
     except (CircuitBreakerError, RateLimitExceededError) as e:
-        return json.dumps({"status": "CIRCUIT_BREAKER_ACTIVE", "error": str(e)}, indent=2)
+        return json.dumps({"status": "CIRCUIT_BREAKER_ACTIVE", "error": _safe_err(e)}, indent=2)
 
     clean_name = table_name.strip().lower()
     if clean_name not in ALLOWED_BUSINESS_TABLES:
-        CIRCUIT_BREAKER.record_violation("default", f"Unauthorized table discovery: {clean_name}")
+        CIRCUIT_BREAKER.record_violation(_sess(), f"Unauthorized table discovery: {clean_name}")
         return json.dumps({
             "status": "ACCESS_DENIED",
             "error": f"Table '{clean_name}' is not in the list of accessible business tables. (Permitted: {sorted(list(ALLOWED_BUSINESS_TABLES))})"
@@ -337,7 +353,7 @@ def describe_table(table_name: str) -> str:
     # A0: role read-scope (Postgres only; see safe_query Stage 1b).
     role = get_active_role()
     if is_postgres() and clean_name not in {t.lower() for t in get_role_spec(role)["tables_read"]}:
-        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=table_name,
                   rejection_reason=f"Role '{role}' may not describe table '{clean_name}'",
                   stage="ROLE")
         return _forbidden_response(
@@ -427,21 +443,21 @@ def sample_rows(table_name: str) -> str:
     read-scope, AST validation, PII masking, audit.
     """
     try:
-        CIRCUIT_BREAKER.check_read_allowed("default")
-        CIRCUIT_BREAKER.record_query_start("default")
+        CIRCUIT_BREAKER.check_read_allowed(_sess())
+        CIRCUIT_BREAKER.record_query_start(_sess())
     except RateLimitExceededError as e:
-        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=table_name,
                   rejection_reason=str(e), stage="RATE_LIMIT")
         return json.dumps({
             "status": "THROTTLED",
             "category": "RATE_LIMIT_EXCEEDED",
-            "error": str(e),
-            "circuit_breaker_status": CIRCUIT_BREAKER.get_status("default")
+            "error": _safe_err(e),
+            "circuit_breaker_status": CIRCUIT_BREAKER.get_status(_sess())
         }, indent=2)
 
     clean_name = table_name.strip().lower()
     if clean_name not in ALLOWED_BUSINESS_TABLES:
-        CIRCUIT_BREAKER.record_violation("default", f"Unauthorized table sampling: {clean_name}")
+        CIRCUIT_BREAKER.record_violation(_sess(), f"Unauthorized table sampling: {clean_name}")
         return json.dumps({
             "status": "ACCESS_DENIED",
             "error": f"Table '{clean_name}' is not in the list of accessible business tables. (Permitted: {sorted(list(ALLOWED_BUSINESS_TABLES))})"
@@ -450,7 +466,7 @@ def sample_rows(table_name: str) -> str:
     # A0: role read-scope (Postgres only; see safe_query Stage 1b).
     role = get_active_role()
     if is_postgres() and clean_name not in {t.lower() for t in get_role_spec(role)["tables_read"]}:
-        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=table_name,
                   rejection_reason=f"Role '{role}' may not sample table '{clean_name}'",
                   stage="ROLE")
         return _forbidden_response(
@@ -474,43 +490,43 @@ def sample_rows(table_name: str) -> str:
         result["status"] = "SUCCESS"
         result["engine"] = "PostgreSQL" if is_postgres() else "SQLite"
 
-        log_event("QUERY_ACCEPTED", session_id="default", safe_sql=safe_sql,
+        log_event("QUERY_ACCEPTED", session_id=_sess(), safe_sql=safe_sql,
                   tables_accessed=sorted(list(tables_accessed)),
                   row_count=result.get("row_count", 0),
                   exec_ms=result.get("execution_time_ms", 0))
         return json.dumps(result, indent=2, default=str)
 
     except ASTGuardrailError as e:
-        tripped = CIRCUIT_BREAKER.record_violation("default", str(e))
-        cb_status = CIRCUIT_BREAKER.get_status("default")
-        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+        tripped = CIRCUIT_BREAKER.record_violation(_sess(), str(e))
+        cb_status = CIRCUIT_BREAKER.get_status(_sess())
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=table_name,
                   rejection_reason=str(e), stage="AST")
         if tripped:
-            log_event("CIRCUIT_BREAKER_TRIP", session_id="default",
+            log_event("CIRCUIT_BREAKER_TRIP", session_id=_sess(),
                       violation_count=cb_status["violations_in_window"],
                       quarantine_until=cb_status.get("quarantine_remaining_seconds", 0))
         return json.dumps({
             "status": "REJECTED_BY_GUARDRAIL",
             "category": "AST_SECURITY_VIOLATION",
-            "error": str(e),
+            "error": _safe_err(e),
             "original_query": table_name
         }, indent=2)
     except TimeoutError as e:
-        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=table_name,
                   rejection_reason=str(e), stage="TIMEOUT")
         return json.dumps({
             "status": "EXECUTION_TIMEOUT",
             "category": "BOUNDED_TIMEOUT_EXCEEDED",
-            "error": str(e),
+            "error": _safe_err(e),
             "original_query": table_name
         }, indent=2)
     except Exception as e:
-        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+        log_event("QUERY_REJECTED", session_id=_sess(), raw_input=table_name,
                   rejection_reason=str(e), stage="DB")
         return json.dumps({
             "status": "DATABASE_ERROR",
             "category": "EXECUTION_FAILURE",
-            "error": str(e),
+            "error": _safe_err(e),
             "original_query": table_name
         }, indent=2)
 
@@ -523,16 +539,16 @@ def propose_mutation(sql: str) -> str:
     Does NOT execute the mutation. Generates a proposal token and dry-run query plan.
     """
     try:
-        CIRCUIT_BREAKER.check_allowed("default")
+        CIRCUIT_BREAKER.check_allowed(_sess())
     except (CircuitBreakerError, RateLimitExceededError) as e:
-        log_event("SESSION_QUARANTINED_HIT", session_id="default")
-        return json.dumps({"status": "CIRCUIT_BREAKER_ACTIVE", "error": str(e)}, indent=2)
+        log_event("SESSION_QUARANTINED_HIT", session_id=_sess())
+        return json.dumps({"status": "CIRCUIT_BREAKER_ACTIVE", "error": _safe_err(e)}, indent=2)
 
     # A0: role gate — proposing is an editor/admin power.
     role = get_active_role()
     spec = get_role_spec(role)
     if not spec["can_propose"]:
-        log_event("MUTATION_REJECTED", session_id="default",
+        log_event("MUTATION_REJECTED", session_id=_sess(),
                   reason=f"Role '{role}' may not propose mutations", stage="ROLE")
         return _forbidden_response(f"Role '{role}' may not propose mutations.")
 
@@ -548,7 +564,7 @@ def propose_mutation(sql: str) -> str:
         if is_postgres():
             denied = _tables_denied(spec["tables_write"], target_tables)
             if denied:
-                log_event("MUTATION_REJECTED", session_id="default",
+                log_event("MUTATION_REJECTED", session_id=_sess(),
                           reason=f"Role '{role}' may not write table(s): {denied}",
                           stage="ROLE")
                 return _forbidden_response(
@@ -577,7 +593,7 @@ def propose_mutation(sql: str) -> str:
             "status": "AWAITING_OPERATOR_APPROVAL"
         }
         PENDING_PROPOSALS[proposal_token] = proposal_record
-        log_event("MUTATION_PROPOSED", session_id="default",
+        log_event("MUTATION_PROPOSED", session_id=_sess(),
                   proposal_token=proposal_token, safe_sql=normalized_sql)
 
         return json.dumps({
@@ -588,12 +604,12 @@ def propose_mutation(sql: str) -> str:
         }, indent=2)
 
     except ASTGuardrailError as e:
-        CIRCUIT_BREAKER.record_violation("default", str(e))
-        log_event("MUTATION_REJECTED", session_id="default", reason=str(e), stage="AST")
+        CIRCUIT_BREAKER.record_violation(_sess(), str(e))
+        log_event("MUTATION_REJECTED", session_id=_sess(), reason=str(e), stage="AST")
         return json.dumps({
             "status": "REJECTED_BY_GUARDRAIL",
             "category": "AST_MUTATION_VIOLATION",
-            "error": str(e),
+            "error": _safe_err(e),
             "proposed_sql": sql
         }, indent=2)
 
@@ -606,23 +622,23 @@ def apply_mutation(proposal_token: str, operator_approval_key: str) -> str:
     The LLM cannot self-approve; a human administrator must provide the secret key.
     """
     try:
-        CIRCUIT_BREAKER.check_allowed("default")
+        CIRCUIT_BREAKER.check_allowed(_sess())
     except (CircuitBreakerError, RateLimitExceededError) as e:
-        log_event("SESSION_QUARANTINED_HIT", session_id="default")
-        return json.dumps({"status": "CIRCUIT_BREAKER_ACTIVE", "error": str(e)}, indent=2)
+        log_event("SESSION_QUARANTINED_HIT", session_id=_sess())
+        return json.dumps({"status": "CIRCUIT_BREAKER_ACTIVE", "error": _safe_err(e)}, indent=2)
 
     # A0: role gate — approving is an admin power. The operator key below
     # stays as the second factor (proposer != approver).
     role = get_active_role()
     if not get_role_spec(role)["can_approve"]:
-        log_event("MUTATION_REJECTED", session_id="default",
+        log_event("MUTATION_REJECTED", session_id=_sess(),
                   reason=f"Role '{role}' may not approve mutations", stage="ROLE")
         return _forbidden_response(f"Role '{role}' may not approve mutations.")
 
     # Cryptographic / Operator Authentication Check
     if not operator_approval_key or operator_approval_key.strip() != OPERATOR_APPROVAL_SECRET:
-        CIRCUIT_BREAKER.record_violation("default", "Unauthorized mutation execution attempt without valid operator key.")
-        log_event("MUTATION_REJECTED", session_id="default", reason="bad operator key")
+        CIRCUIT_BREAKER.record_violation(_sess(), "Unauthorized mutation execution attempt without valid operator key.")
+        log_event("MUTATION_REJECTED", session_id=_sess(), reason="bad operator key")
         return json.dumps({
             "status": "OPERATOR_AUTHENTICATION_REQUIRED",
             "error": "Execution rejected: Invalid or missing operator_approval_key. The LLM cannot self-approve mutations.",
@@ -631,7 +647,7 @@ def apply_mutation(proposal_token: str, operator_approval_key: str) -> str:
 
     proposal = PENDING_PROPOSALS.get(proposal_token)
     if not proposal:
-        log_event("MUTATION_REJECTED", session_id="default",
+        log_event("MUTATION_REJECTED", session_id=_sess(),
                   reason="unknown token", proposal_token=proposal_token)
         return json.dumps({
             "status": "INVALID_TOKEN",
@@ -644,7 +660,7 @@ def apply_mutation(proposal_token: str, operator_approval_key: str) -> str:
     if not _verify_token(proposal_token):
         # Invalidate expired/forged tokens to prevent replay attempts.
         PENDING_PROPOSALS.pop(proposal_token, None)
-        log_event("MUTATION_REJECTED", session_id="default",
+        log_event("MUTATION_REJECTED", session_id=_sess(),
                   reason="expired or forged token", proposal_token=proposal_token)
         return json.dumps({
             "status": "INVALID_TOKEN",
@@ -659,7 +675,7 @@ def apply_mutation(proposal_token: str, operator_approval_key: str) -> str:
         exec_result = execute_mutation_query(normalized_sql)
         # Invalidate proposal token to prevent replay attacks
         del PENDING_PROPOSALS[proposal_token]
-        log_event("MUTATION_APPLIED", session_id="default",
+        log_event("MUTATION_APPLIED", session_id=_sess(),
                   proposal_token=proposal_token, operator="[REDACTED]",
                   row_count=exec_result.get("affected_rows", 0))
 
@@ -672,11 +688,11 @@ def apply_mutation(proposal_token: str, operator_approval_key: str) -> str:
             "execution_time_ms": exec_result["execution_time_ms"]
         }, indent=2)
     except Exception as e:
-        log_event("MUTATION_REJECTED", session_id="default",
+        log_event("MUTATION_REJECTED", session_id=_sess(),
                   reason=str(e), proposal_token=proposal_token)
         return json.dumps({
             "status": "EXECUTION_ERROR",
-            "error": str(e)
+            "error": _safe_err(e)
         }, indent=2)
 
 
@@ -708,14 +724,14 @@ def reset_quarantine() -> str:
     """
     role = get_active_role()
     if not get_role_spec(role)["management"]:
-        log_event("QUERY_REJECTED", session_id="default",
+        log_event("QUERY_REJECTED", session_id=_sess(),
                   raw_input="reset_quarantine",
                   rejection_reason=f"Role '{role}' lacks management rights",
                   stage="ROLE")
         return _forbidden_response(
             f"Role '{role}' lacks management rights.")
-    CIRCUIT_BREAKER.reset_session("default")
-    log_event("QUARANTINE_RESET", session_id="default", role=role)
+    CIRCUIT_BREAKER.reset_session(_sess())
+    log_event("QUARANTINE_RESET", session_id=_sess(), role=role)
     return json.dumps({
         "status": "SUCCESS",
         "message": "Session quarantine cleared.",

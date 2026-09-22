@@ -30,13 +30,30 @@ PHONE_PATTERN = re.compile(r"^(\+?\d{1,3}[- ]?)?\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}$
 PII_COLUMNS = {"email", "phone", "ssn", "password_hash", "token", "secret", "credit_card"}
 
 
+def _normalize_col(name: str) -> str:
+    """Lowercase letters only: 'E-Mail Address' -> 'emailaddress'."""
+    return re.sub(r"[^a-z]", "", (name or "").lower())
+
+
+# Variant-tolerant stems matched against the normalized column name, so
+# real-world spellings (e_mail, mobile_no, phone-number, social_security_no)
+# mask exactly like the canonical names. Curated conservatively: a stem must
+# not occur inside common non-sensitive words (no bare "mail" -> "mailer",
+# no bare "tel" -> "hotel", no "cell" -> "cellar"). Over-masking a rare
+# word (e.g. "microphone") is accepted: safe direction for a masker.
+_EMAIL_STEMS = ("email",)
+_PHONE_STEMS = ("phone", "mobile", "telephone")
+_SECRET_STEMS = ("token", "secret", "password", "passwd", "ssn",
+                 "socialsecurity", "creditcard", "passcode")
+
+
 def mask_pii_value(column_name: str, value: Any) -> Any:
     """Masks sensitive PII values based on column name or string pattern."""
     if not isinstance(value, str):
         return value
 
-    col_lower = column_name.lower()
-    if "email" in col_lower or EMAIL_PATTERN.match(value):
+    norm = _normalize_col(column_name)
+    if any(s in norm for s in _EMAIL_STEMS) or EMAIL_PATTERN.match(value):
         parts = value.split("@")
         if len(parts) == 2:
             name, domain = parts
@@ -44,13 +61,13 @@ def mask_pii_value(column_name: str, value: Any) -> Any:
             return f"{masked_name}@{domain}"
         return "***@masked.com"
 
-    if "phone" in col_lower or PHONE_PATTERN.match(value):
+    if any(s in norm for s in _PHONE_STEMS) or PHONE_PATTERN.match(value):
         digits = re.sub(r"\D", "", value)
         if len(digits) >= 4:
             return f"***-***-{digits[-4:]}"
         return "***-***-****"
 
-    if any(k in col_lower for k in ("token", "secret", "password", "ssn", "credit_card")):
+    if any(s in norm for s in _SECRET_STEMS):
         return "[REDACTED_SENSITIVE]"
 
     return value
@@ -161,7 +178,8 @@ def execute_bounded_query(
         elapsed_ms = round(elapsed_s * 1000, 2)
         try:
             from .circuit_breaker import CIRCUIT_BREAKER
-            CIRCUIT_BREAKER.record_execution_time("default", elapsed_s)
+            from ..config import get_active_role
+            CIRCUIT_BREAKER.record_execution_time(get_active_role(), elapsed_s)
         except ImportError:
             pass
 
