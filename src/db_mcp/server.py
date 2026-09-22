@@ -93,6 +93,29 @@ def get_current_dialect() -> str:
     return "postgres" if is_postgres() else "sqlite"
 
 
+def _estimate_table_rows(tables: set) -> dict:
+    """Planner row estimates (pg_class.reltuples) for catalog tables.
+
+    Estimates, not exact counts — they can lag after bulk loads. Good for
+    "which tables are big", wrong for exact accounting. Restricted tables
+    are never queried, so estimates leak nothing new. Best-effort: {} on
+    any failure or non-Postgres engine.
+    """
+    if not is_postgres() or not tables:
+        return {}
+    try:
+        with get_read_only_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT relname, reltuples::bigint FROM pg_class "
+                "WHERE relname = ANY(%s);",
+                (sorted(tables),),
+            )
+            return {name: int(count) for name, count in cur.fetchall()}
+    except Exception:
+        return {}
+
+
 # ── A0: role-based access control (roles.yaml; fail-closed to reader) ─────
 # Table-scope checks apply on Postgres only: the SQLite fallback uses a
 # different table universe. Capability flags apply on every engine.
@@ -287,6 +310,7 @@ def list_accessible_tables() -> str:
         "status": "SUCCESS",
         "engine": "PostgreSQL (Chinook)" if is_postgres() else "SQLite",
         "accessible_tables": table_catalog,
+        "estimated_rows": _estimate_table_rows(set(table_catalog)),
         "restricted_policy": restricted_info,
         "guardrail_policy": "Autonomous read-only access (SELECT queries only). Max 100 rows per query. Hard 2.0s timeout."
     }, indent=2)
@@ -334,6 +358,27 @@ def describe_table(table_name: str) -> str:
             pk_columns = {r[0] for r in cur.fetchall()}
 
             cur.execute("""
+            SELECT a.attname, fr.relname, fa.attname
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_attribute a ON a.attrelid = c.conrelid
+                               AND a.attnum = ANY(c.conkey)
+            JOIN pg_class fr ON fr.oid = c.confrelid
+            JOIN pg_attribute fa ON fa.attrelid = c.confrelid
+                                AND fa.attnum = ANY(c.confkey)
+            WHERE c.contype = 'f' AND t.relname = %s
+            ORDER BY a.attnum;
+            """, (clean_name,))
+            # pg_catalog has no privilege filtering: hide FK targets outside
+            # the allowlist (e.g. customer.support_rep_id -> employee) so
+            # schema discovery never names restricted tables.
+            foreign_keys = [
+                {"column": col, "references_table": ref_t, "references_column": ref_c}
+                for col, ref_t, ref_c in cur.fetchall()
+                if ref_t in ALLOWED_BUSINESS_TABLES
+            ]
+
+            cur.execute("""
             SELECT ordinal_position, column_name, data_type, is_nullable, column_default
             FROM information_schema.columns
             WHERE table_name = %s
@@ -363,12 +408,111 @@ def describe_table(table_name: str) -> str:
                 }
                 for row in cur.fetchall()
             ]
+            foreign_keys = []
 
     return json.dumps({
         "status": "SUCCESS",
         "table": clean_name,
-        "columns": columns
+        "columns": columns,
+        "foreign_keys": foreign_keys
     }, indent=2)
+
+
+@mcp.tool()
+def sample_rows(table_name: str) -> str:
+    """
+    Returns up to 3 representative rows from an accessible table.
+    Lets the agent see real data shapes before writing queries.
+    Same read pipeline as safe_query: throttle gate, whitelist, role
+    read-scope, AST validation, PII masking, audit.
+    """
+    try:
+        CIRCUIT_BREAKER.check_read_allowed("default")
+        CIRCUIT_BREAKER.record_query_start("default")
+    except RateLimitExceededError as e:
+        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+                  rejection_reason=str(e), stage="RATE_LIMIT")
+        return json.dumps({
+            "status": "THROTTLED",
+            "category": "RATE_LIMIT_EXCEEDED",
+            "error": str(e),
+            "circuit_breaker_status": CIRCUIT_BREAKER.get_status("default")
+        }, indent=2)
+
+    clean_name = table_name.strip().lower()
+    if clean_name not in ALLOWED_BUSINESS_TABLES:
+        CIRCUIT_BREAKER.record_violation("default", f"Unauthorized table sampling: {clean_name}")
+        return json.dumps({
+            "status": "ACCESS_DENIED",
+            "error": f"Table '{clean_name}' is not in the list of accessible business tables. (Permitted: {sorted(list(ALLOWED_BUSINESS_TABLES))})"
+        }, indent=2)
+
+    # A0: role read-scope (Postgres only; see safe_query Stage 1b).
+    role = get_active_role()
+    if is_postgres() and clean_name not in {t.lower() for t in get_role_spec(role)["tables_read"]}:
+        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+                  rejection_reason=f"Role '{role}' may not sample table '{clean_name}'",
+                  stage="ROLE")
+        return _forbidden_response(
+            f"Role '{role}' may not sample table '{clean_name}'.")
+
+    dialect = get_current_dialect()
+    try:
+        safe_sql, tables_accessed = validate_and_transform_query(
+            raw_sql=f"SELECT * FROM {clean_name} LIMIT 3",
+            allowed_tables=ALLOWED_BUSINESS_TABLES,
+            max_limit=DEFAULT_MAX_LIMIT,
+            dialect=dialect
+        )
+        result = execute_bounded_query(
+            safe_sql=safe_sql,
+            timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
+            max_rows=3,
+            mask_pii=True
+        )
+        result["table"] = clean_name
+        result["status"] = "SUCCESS"
+        result["engine"] = "PostgreSQL" if is_postgres() else "SQLite"
+
+        log_event("QUERY_ACCEPTED", session_id="default", safe_sql=safe_sql,
+                  tables_accessed=sorted(list(tables_accessed)),
+                  row_count=result.get("row_count", 0),
+                  exec_ms=result.get("execution_time_ms", 0))
+        return json.dumps(result, indent=2, default=str)
+
+    except ASTGuardrailError as e:
+        tripped = CIRCUIT_BREAKER.record_violation("default", str(e))
+        cb_status = CIRCUIT_BREAKER.get_status("default")
+        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+                  rejection_reason=str(e), stage="AST")
+        if tripped:
+            log_event("CIRCUIT_BREAKER_TRIP", session_id="default",
+                      violation_count=cb_status["violations_in_window"],
+                      quarantine_until=cb_status.get("quarantine_remaining_seconds", 0))
+        return json.dumps({
+            "status": "REJECTED_BY_GUARDRAIL",
+            "category": "AST_SECURITY_VIOLATION",
+            "error": str(e),
+            "original_query": table_name
+        }, indent=2)
+    except TimeoutError as e:
+        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+                  rejection_reason=str(e), stage="TIMEOUT")
+        return json.dumps({
+            "status": "EXECUTION_TIMEOUT",
+            "category": "BOUNDED_TIMEOUT_EXCEEDED",
+            "error": str(e),
+            "original_query": table_name
+        }, indent=2)
+    except Exception as e:
+        log_event("QUERY_REJECTED", session_id="default", raw_input=table_name,
+                  rejection_reason=str(e), stage="DB")
+        return json.dumps({
+            "status": "DATABASE_ERROR",
+            "category": "EXECUTION_FAILURE",
+            "error": str(e),
+            "original_query": table_name
+        }, indent=2)
 
 
 @mcp.tool()

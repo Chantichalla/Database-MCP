@@ -205,4 +205,15 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if len(sys.argv) > 1 and sys.argv[1] in ("init", "up"):
+        sys.exit(main())
+    # Anything else (e.g. `setup.py egg_info` invoked by pip/setuptools
+    # during `pip install .`): delegate to setuptools. All packaging
+    # metadata lives in pyproject.toml.
+    try:
+        from setuptools import setup
+    except ImportError:
+        print("Unknown command. Use: python setup.py init|up "
+              "(packaging commands run via `pip install .`, not setup.py directly).")
+        sys.exit(2)
+    setup()

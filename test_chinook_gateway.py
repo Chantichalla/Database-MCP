@@ -10,6 +10,7 @@ import os
 from src.db_mcp.server import (
     list_accessible_tables,
     describe_table,
+    sample_rows,
     safe_query,
     propose_mutation,
     apply_mutation,
@@ -435,10 +436,50 @@ def run_tests():
     rc.close()
     print("  PASSED — even a fooled front desk can't open the room lock\n")
 
+    # ─── SCHEMA DISCOVERY+ (sample_rows, FKs, estimates) ────────────────────
+    print("[TEST 23] sample_rows — masked peek through the read pipeline")
+    _reset_cb()
+    _set_role("admin")
+    s = json.loads(sample_rows("track"))
+    assert s["status"] == "SUCCESS" and s["row_count"] == 3, s
+    assert len(s["rows"][0]) > 1, "Expected real columns, not just a count"
+    print(f"  sample track: 3 rows, cols {s['columns'][:3]} (GOOD)")
+    sc = json.loads(sample_rows("customer"))
+    assert sc["status"] == "SUCCESS", sc
+    for row in sc["rows"]:
+        assert "***" in (row.get("email") or ""), f"PII leaked: {row}"
+    print("  sample customer: PII masked (GOOD)")
+    se = json.loads(sample_rows("employee"))
+    assert se["status"] in ("ACCESS_DENIED", "REJECTED_BY_GUARDRAIL"), se
+    print("  sample employee: refused (GOOD)")
+    _set_role("reader")
+    sr = json.loads(sample_rows("track"))
+    assert sr["status"] == "SUCCESS", sr
+    _set_role("admin")
+    print("  reader sample: SUCCESS (GOOD)")
+    print("  PASSED — peek-at-data without new security surface\n")
+
+    print("[TEST 24] describe FKs + listing estimates (nothing restricted leaks)")
+    fk = json.loads(describe_table("invoice_line"))
+    assert fk["status"] == "SUCCESS", fk
+    assert any(f["references_table"] == "invoice" for f in fk["foreign_keys"]), fk
+    assert any(f["references_table"] == "track" for f in fk["foreign_keys"]), fk
+    print(f"  invoice_line FKs: {fk['foreign_keys']} (GOOD)")
+    cust = json.loads(describe_table("customer"))
+    assert all(f["references_table"] != "employee" for f in cust.get("foreign_keys", [])), cust
+    print("  customer FKs hide employee reference (GOOD)")
+    lst = json.loads(list_accessible_tables())
+    est = lst.get("estimated_rows", {})
+    assert est.get("track", 0) > 3000, est
+    assert "employee" not in est, "Restricted table leaked via estimates"
+    print(f"  estimates: track={est.get('track')} (planner estimate, GOOD)")
+    print("  PASSED — join discovery + sizing without new leaks\n")
+
     print("=" * 70)
     print("ALL CRITICAL REMEDIATION TESTS PASSED — 3 VULNERABILITIES CLOSED.")
     print("PHASE 2 HARDENING VERIFIED — A1/A2/A3 + B1/B2/B3 (+B4 alerting, B5 docs).")
     print("A0 KEYCARDS VERIFIED — reader/editor/admin at tool + DB layers.")
+    print("DISCOVERY+ VERIFIED — sample_rows, FKs, row estimates.")
     print("QUARANTINE RESCOPED — writes gated, reads throttled, audit always open.")
     print("=" * 70)
 

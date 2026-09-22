@@ -47,8 +47,9 @@ Against your own database: `python setup.py init` (wizard) or set `DB_HOST/DB_PO
 | Tool | Role | Description |
 |---|---|---|
 | `safe_query` | all | Validated read-only query, PII-masked, capped at 100 rows / 2s |
-| `list_accessible_tables` | all | Allowlisted tables (prevents hallucinated names) |
-| `describe_table` | all | Columns, types, primary keys |
+| `list_accessible_tables` | all | Allowlisted tables with planner row estimates (prevents hallucinated names) |
+| `describe_table` | all | Columns, types, primary keys, foreign keys |
+| `sample_rows` | all | Up to 3 masked sample rows — peek at data shapes before querying |
 | `propose_mutation` | editor, admin | Dry-run plan + expiring proposal token, executes nothing |
 | `apply_mutation` | admin | Executes a proposal with the operator approval key |
 | `get_gateway_health` | all | Health, circuit-breaker state, quotas |
@@ -71,7 +72,7 @@ Against your own database: `python setup.py init` (wizard) or set `DB_HOST/DB_PO
 
 ```powershell
 $env:PYTHONPATH='C:\DB_MCP'   # or export PYTHONPATH=/path/to/repo
-python test_chinook_gateway.py   # 22 end-to-end tests against live Postgres
+python test_chinook_gateway.py   # 24 end-to-end tests against live Postgres
 python -m unittest discover -s tests
 ```
 
@@ -94,3 +95,10 @@ test_chinook_gateway.py  primary end-to-end suite (22 tests)
 ## Requirements
 
 `pip install -r requirements.txt` — `sqlglot`, `pydantic`, `mcp`, `psycopg2-binary`, `python-dotenv`, `pyyaml`.
+
+Packaged (`pyproject.toml`, version 0.1.0) for one-command install once published:
+
+```powershell
+pipx install git+https://github.com/Chantichalla/Database-MCP.git
+safe-db-gateway   # reads .env from the current directory
+```
