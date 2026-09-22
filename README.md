@@ -2,7 +2,8 @@
 
 # Database Gateway
 
-**Secure MCP server for PostgreSQL — guarded reads, masked PII, human-approved writes.**
+**AI agents need database access, but a raw connection lets them leak PII, wreck schema, or obey injected instructions.**
+**This gateway sits between the agent and Postgres — reads are validated and masked, writes need a human, and every action is audited.**
 
 [Quickstart](#quickstart) · [Tools](#tools) · [Access Control](#access-control) · [Security](#security) · [Contributing](CONTRIBUTING.md) · [License](#license)
 
@@ -13,8 +14,6 @@
 [![Tests](https://img.shields.io/badge/tests-28_passing-brightgreen.svg)](tests/test_chinook_gateway.py)
 
 </div>
-
-AI agents get read access with guardrails; writes require human approval.
 
 ## Quickstart
 
