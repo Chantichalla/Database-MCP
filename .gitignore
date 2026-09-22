@@ -1,0 +1,31 @@
+# Environment and secret files
+.env
+.env.bak
+*.env.local
+mcp-servers.json
+
+# Runtime audit log (append-only, local)
+audit.log
+*.log
+
+# Python virtual environment and caches
+.venv/
+env/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE, OS and local agent files
+.vscode/
+.idea/
+.agents/
+.DS_Store
+Thumbs.db

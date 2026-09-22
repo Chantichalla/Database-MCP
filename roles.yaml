@@ -1,0 +1,51 @@
+# Safe DB Gateway — access levels (keycards).
+#
+# WHO OWNS THIS FILE: whoever deploys the gateway (you / your company's ops).
+# The gateway only *enforces* it; no tool can read or change it at runtime.
+# It is loaded once at startup: edits require a restart to take effect.
+#
+# HOW TO USE:
+#   1. Set `default_role` below (or override per deployment with GATEWAY_ROLE env var).
+#   2. Adjust table lists per role to match your database.
+#   3. Restart the gateway. Done — no code changes, ever.
+#
+# RULES THAT NEVER BEND (enforced in code, not here):
+#   - Restricted tables (e.g. employee) are blocked for EVERY role unless you
+#     explicitly list them here. Least privilege is the default.
+#   - Schema destruction (DROP/ALTER/...) is rejected by the AST guardrail for
+#     all roles, including admin. Admin means "widest data + management", never
+#     "superuser".
+#   - A missing or broken file fails CLOSED to `reader` with a startup warning.
+
+default_role: reader
+
+roles:
+  reader:
+    description: "Looks, never touches. Dashboard agents, analysts exploring data."
+    # NOTE: `customer` is queryable because the AST guardrail transparently
+    # rewrites it to the `customer_masked` security-barrier view AND the raw
+    # table is revoked at the DB layer. Masking is enforced regardless of role.
+    tables_read: [album, artist, genre, invoice, invoice_line, media_type,
+                  playlist, playlist_track, track, customer, customer_masked]
+    tables_write: []
+    can_propose: false
+    can_approve: false
+    management: false
+
+  editor:
+    description: "Reads like a reader, plus proposes/applies changes on listed tables."
+    tables_read: [album, artist, genre, invoice, invoice_line, media_type,
+                  playlist, playlist_track, track, customer, customer_masked]
+    tables_write: [customer, invoice, invoice_line]
+    can_propose: true
+    can_approve: false
+    management: false
+
+  admin:
+    description: "Owner. Widest data access + gateway management (quarantine reset, audit)."
+    tables_read: [album, artist, genre, invoice, invoice_line, media_type,
+                  playlist, playlist_track, track, customer, customer_masked]
+    tables_write: [customer, invoice, invoice_line]
+    can_propose: true
+    can_approve: true
+    management: true

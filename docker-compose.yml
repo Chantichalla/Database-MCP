@@ -1,0 +1,29 @@
+# Safe DB Gateway — local stack.
+# One command:  docker compose up -d db   (or: python setup.py up)
+# Fresh volume? The Chinook seed in ./db/ loads automatically on first init.
+# Auth is scram-sha-256 by default (never trust) for the postgres superuser
+# password below — set POSTGRES_PASSWORD in .env (setup.py init does it).
+
+name: safe-db-gateway
+
+services:
+  db:
+    image: postgres:16
+    container_name: safe-db-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-chinook}
+    ports:
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/Chinook_PostgreSql.sql:/docker-entrypoint-initdb.d/01-chinook.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${DB_NAME:-chinook}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
