@@ -1,10 +1,20 @@
+<div align="center">
+
 # Safe DB Gateway
+
+**Secure MCP server for PostgreSQL — guarded reads, masked PII, human-approved writes.**
+
+[Quickstart](#quickstart) · [Tools](#tools) · [Access Control](#access-control) · [Security](#security) · [Contributing](CONTRIBUTING.md) · [License](#license)
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-stdio-green.svg)](https://modelcontextprotocol.io/)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](pyproject.toml)
+[![Tests](https://img.shields.io/badge/tests-28_passing-brightgreen.svg)](tests/test_chinook_gateway.py)
 
-Secure MCP server for PostgreSQL. AI agents get read access with guardrails; writes require human approval.
+</div>
+
+AI agents get read access with guardrails; writes require human approval.
 
 ## Quickstart
 
@@ -23,7 +33,7 @@ pipx install git+https://github.com/Chantichalla/Database-MCP.git
 safe-db-gateway
 ```
 
-To use your own database: `python setup.py init` (wizard) or set `DB_HOST` / `DB_PORT` / `DB_NAME` with `DB_SEED=empty`.
+Own database? `python setup.py init` (wizard) or set `DB_HOST` / `DB_PORT` / `DB_NAME` with `DB_SEED=empty`.
 
 ## Tools
 
@@ -39,7 +49,7 @@ To use your own database: `python setup.py init` (wizard) or set `DB_HOST` / `DB
 | `get_audit_summary` | all | Recent audit events |
 | `reset_quarantine` | admin | Clear quarantine without restart |
 
-## Access control
+## Access Control
 
 One line in `roles.yaml` sets the deployment's access level:
 
@@ -49,16 +59,24 @@ One line in `roles.yaml` sets the deployment's access level:
 | `editor` | ✅ | ✅ | ❌ | ❌ |
 | `admin` | ✅ | ✅ | ✅ | ✅ |
 
-Enforced twice: at the tool layer and by dedicated Postgres roles. Invalid config fails closed to `reader`.
+Enforced twice — at the tool layer and by dedicated Postgres roles. Invalid config fails closed to `reader`.
 
 ## Security
 
-- SQL validated by AST (`sqlglot`): SELECT-only, table whitelist, dangerous functions blocked
+- SQL validated by AST: SELECT-only, table whitelist, dangerous functions blocked
 - PII masked in a security-barrier view, before any SQL function sees the data
-- 3 violations → 15-minute write quarantine (reads keep working, persisted across restarts)
+- 3 violations → 15-minute write quarantine (reads keep working, survives restarts)
 - Writes need a human operator key plus a 5-minute single-use token
 - Append-only audit log; credentials scrubbed from all logs and errors
-- 28 end-to-end tests: `python tests/test_chinook_gateway.py`
+- See [SECURITY.md](SECURITY.md) for reporting vulnerabilities
+
+## Testing
+
+```powershell
+$env:PYTHONPATH='C:\DB_MCP'   # or export PYTHONPATH=/path/to/repo
+python tests/test_chinook_gateway.py   # 28 end-to-end tests, live Postgres
+python -m unittest discover -s tests
+```
 
 ## Configuration
 
