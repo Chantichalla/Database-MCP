@@ -12,8 +12,6 @@
 
 </div>
 
-## Why
-
 AI agents need database access, but a raw connection lets them leak PII, wreck schema, or obey injected instructions. This gateway sits between the agent and Postgres — reads are validated and masked, writes need a human, and every action is audited.
 
 ## Quickstart
