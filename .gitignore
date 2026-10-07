@@ -35,6 +35,7 @@ demo_benchmarks.py
 new_test.md
 live_test_report.md
 INTERVIEW_PREP.md
+docs/
 
 # IDE, OS and local agent files
 .vscode/
